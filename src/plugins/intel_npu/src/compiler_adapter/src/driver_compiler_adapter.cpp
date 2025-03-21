@@ -560,6 +560,7 @@ std::string DriverCompilerAdapter::serializeConfig(const Config& config,
         logger.warning("NPU_QDQ_OPTIMIZATION property is not supported by this compiler version. Removing from "
                        "parameters");
         content = std::regex_replace(content, std::regex(qdqstr.str()), "");
+    }
 
     // BATCH_COMPILER_MODE_SETTINGS is not supported in versions < 7.3 - need to remove it
     if ((compilerVersion.major < 7) || (compilerVersion.major == 7 && compilerVersion.minor < 4)) {

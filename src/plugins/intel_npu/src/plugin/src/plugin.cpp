@@ -637,6 +637,8 @@ void Plugin::reset_compiler_dependent_properties() const {
             std::get<0>(_properties[ov::intel_npu::qdq_optimization.name()]) = true;  /// mark supported
         } else {
             std::get<0>(_properties[ov::intel_npu::qdq_optimization.name()]) = false;  // mark unsupported
+        }
+    }
 }
 
 void Plugin::set_property(const ov::AnyMap& properties) {
