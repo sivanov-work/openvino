@@ -38,8 +38,7 @@ namespace element {
 /// \ingroup ov_element_cpp_api
 enum class Type_t {
     dynamic,  //!< Dynamic element type
-    undefined OPENVINO_ENUM_DEPRECATED("This type is deprecated and will be removed in 2026.0. Use dynamic instead.") =
-        dynamic,  //!< Undefined element type
+    undefined = dynamic,  //!< Undefined element type
     boolean,      //!< boolean element type
     bf16,         //!< bf16 element type
     f16,          //!< f16 element type
@@ -140,10 +139,7 @@ using TypeVector = std::vector<Type>;
 
 /// \brief undefined element type
 /// \ingroup ov_element_cpp_api
-OPENVINO_SUPPRESS_DEPRECATED_START
-OPENVINO_DEPRECATED("This type is deprecated and will be removed in 2026.0. Use dynamic instead.")
 inline constexpr Type undefined(Type_t::undefined);
-OPENVINO_SUPPRESS_DEPRECATED_END
 /// \brief dynamic element type
 /// \ingroup ov_element_cpp_api
 inline constexpr Type dynamic(Type_t::dynamic);
