@@ -328,6 +328,14 @@ void fuse_mean_scale(ov::preprocess::PrePostProcessor& preproc, const benchmark_
         }
     }
 }
+
+std::map<std::string, ov::Tensor> create_output_tensors(const ov::CompiledModel& compiledModel) {
+    std::map<std::string, ov::Tensor> outputTensors;
+    for (auto& output : compiledModel.outputs()) {
+        outputTensors[output.get_any_name()] = ov::Tensor(output.get_node()->get_element_type(), output.get_shape());;
+    }
+    return outputTensors;
+}
 }  // namespace
 
 /**
@@ -1171,6 +1179,7 @@ int main(int argc, char* argv[]) {
             OPENVINO_THROW("No idle Infer Requests!");
         }
 
+        auto outputTensors = ::create_output_tensors(compiledModel);
         if (!inferenceOnly) {
             auto inputs = app_inputs_info[0];
 
@@ -1183,6 +1192,10 @@ int main(int argc, char* argv[]) {
             if (useGpuMem) {
                 auto outputTensors =
                     ::gpu::get_remote_output_tensors(compiledModel, inferRequest->get_output_cl_buffer());
+                for (auto& output : compiledModel.outputs()) {
+                    inferRequest->set_tensor(output.get_any_name(), outputTensors[output.get_any_name()]);
+                }
+            } else {
                 for (auto& output : compiledModel.outputs()) {
                     inferRequest->set_tensor(output.get_any_name(), outputTensors[output.get_any_name()]);
                 }
@@ -1242,6 +1255,10 @@ int main(int argc, char* argv[]) {
                 if (useGpuMem) {
                     auto outputTensors =
                         ::gpu::get_remote_output_tensors(compiledModel, inferRequest->get_output_cl_buffer());
+                    for (auto& output : compiledModel.outputs()) {
+                        inferRequest->set_tensor(output.get_any_name(), outputTensors[output.get_any_name()]);
+                    }
+                } else {
                     for (auto& output : compiledModel.outputs()) {
                         inferRequest->set_tensor(output.get_any_name(), outputTensors[output.get_any_name()]);
                     }
