@@ -10,7 +10,7 @@
 #include "yolo_helpers.hpp"
 #include "tools_helpers.hpp"
 
-//#include <openvino/core/parallel.hpp>
+#include <openvino/core/parallel.hpp>
 #include <openvino/openvino.hpp>
 
 #include <opencv2/core.hpp>
