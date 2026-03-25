@@ -24,34 +24,28 @@ def get_model_name(model_path):
     return os.path.basename(model_path).split(".")[0]
 
 
-class RuntimeErrorExt(RuntimeError):
-    def __init__(self, error_code, message):
-        super().__init__(message)
-        self.error_code = error_code
-
-
-def initialize_provider_output_result_data(deserialied_output_data, leaf_default_values):
+def initialize_provider_output_result_data(deserialized_output_data, leaf_default_values):
     output_result = {
         "files": [],
-        "shape": deserialied_output_data["shape"],
-        "element_type": deserialied_output_data["element_type"],
+        "shape": deserialized_output_data["shape"],
+        "element_type": deserialized_output_data["element_type"],
         "data": {},
         "not_found_data": defaultdict(dict),
         "status": [],
     }
-    for blob_file_path in deserialied_output_data["files"]:
+    for blob_file_path in deserialized_output_data["files"]:
         if not os.path.isfile(blob_file_path):
             output_result["status"].append(f"File not found: {blob_file_path}")
             continue
 
         std_correlation_default_value = "NaN"
-        if "std_correlation" in leaf_default_values.keys():
-            std_correlation_default_value = leaf_default_values["std_correlation"]
+        if "NRMSE" in leaf_default_values.keys():
+            std_correlation_default_value = leaf_default_values["NRMSE"]
 
         blob_file_name = os.path.basename(blob_file_path)
         output_result["data"][blob_file_name] = {
             "path": blob_file_path,
-            "std_correlation": std_correlation_default_value,
+            "NRMSE": std_correlation_default_value,
         }
         output_result["files"].append(blob_file_name)
     return output_result
@@ -89,10 +83,10 @@ def initialize_provider_result_data(
     return provider_result
 
 
-def get_comparison_profiver_output_files_result_data(
+def get_comparison_provider_output_files_result_data(
     ref_provider_output_blob_file_data, provider_to_cmp_output_blob_file_data, datatype
 ):
-    provider_to_cmp_output_blob_file_data["std_correlation"] = nrmse.compare_blobs(
+    provider_to_cmp_output_blob_file_data["NRMSE"] = nrmse.compare_blobs(
         ref_provider_output_blob_file_data["path"],
         provider_to_cmp_output_blob_file_data["path"],
         datatype,
@@ -135,13 +129,13 @@ def get_comparison_provider_output_result_data(
         if f in provider_to_cmp_output_data["data"].keys():
             try:
                 provider_to_cmp_output_data["data"][f] = (
-                    get_comparison_profiver_output_files_result_data(
+                    get_comparison_provider_output_files_result_data(
                         ref_provider_output_data["data"][f],
                         provider_to_cmp_output_data["data"][f],
                         ref_provider_output_data["element_type"],
                     )
                 )
-            except RuntimeError as ex:
+            except Exception as ex:
                 provider_to_cmp_output_data["status"].append(
                     f"Cannot compare the file: {f}, err: {ex}"
                 )
@@ -222,10 +216,10 @@ def multi_provider_result_comparator(ref_provider, providers_to_compare, model_p
 
         # fill LHS default values
         result["data"][ref_provider] = initialize_provider_result_data(
-            ref_provider, ref_provider_model_tensors_descr, {"std_correlation": 1}
+            ref_provider, ref_provider_model_tensors_descr, {"NRMSE": 1}
         )
         result["providers"].append(ref_provider)
-    except RuntimeError as ex:
+    except Exception as ex:
         result["status"].append(
             f"Cannot find results for the reference provider: {ref_provider}, err: {ex}"
         )
@@ -242,7 +236,7 @@ def multi_provider_result_comparator(ref_provider, providers_to_compare, model_p
 
             # fill default values
             result["data"][p] = initialize_provider_result_data(
-                p, provider_model_tensors_descr, {"std_correlation": "NaN"}
+                p, provider_model_tensors_descr, {"NRMSE": "NaN"}
             )
             result["providers"].append(p)
         except Exception as ex:

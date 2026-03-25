@@ -37,7 +37,7 @@ a provider name and input files description.""",
         default=None,
     )
     parser.add_argument("-i", "--inputs", help=FilesStorage.source_description)
-    parser.add_argument("-ppm", "--preprocess_model", help=ModelInfo.model_description)
+    parser.add_argument("-ppp", "--pre_post_processor", help=ModelInfo.model_description)
     parser.add_argument(
         "-c",
         "--provider_config",
@@ -144,7 +144,7 @@ def main():
     # instantiate a specific inference provider and compile a model
     ctx = loader.create_provider_ctx(args.provider)
     provider = loader.create_provider_for_model(ctx, args.model)
-    model = provider.create_model(ModelInfo(args.preprocess_model), Config(args.provider_config))
+    model = provider.create_model(ModelInfo(args.pre_post_processor), Config(args.provider_config))
 
     # Expose model inputs/outputs info
     model_info = model.get_model_info()

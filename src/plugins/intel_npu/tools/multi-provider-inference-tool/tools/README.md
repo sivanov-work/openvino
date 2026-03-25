@@ -46,7 +46,7 @@ Will produce results of comparison of inference artifacts of these three provide
                     "data": {
                         "odata_float32_[1_1000].blob": {
                             "path": "ov\\CPU\\0\\resnet-50-pytorch\\output\\495\\odata_float32_[1_1000].blob",
-                            "std_correlation": 1
+                            "NRMSE": 1
                         }
                     },
                     "not_found_data": {},
@@ -73,7 +73,7 @@ Will produce results of comparison of inference artifacts of these three provide
                     "data": {
                         "odata_float32_[1_1000].blob": {
                             "path": "ov\\GPU\\0\\resnet-50-pytorch\\output\\495\\odata_float32_[1_1000].blob",
-                            "std_correlation": 0.9882393240555067
+                            "NRMSE": 0.9882393240555067
                         }
                     },
                     "not_found_data": {},

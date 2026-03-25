@@ -112,7 +112,7 @@ mpit.py -m <model_path> -p <provider> -i
 > Note: The "convert" field is optional. If not specified, the tool will
 > use the model's native "shape", "layout", and "element_type" as default values.
 
-Refer to the [JSON schema](https://github.com/openvinotoolkit/openvino/tree/master/src/plugins/intel_npu/tools/multi-provider-inference-tool/schema/input_source.json?raw=true) for full details.
+Refer to the [JSON schema](schema/input_source.json?raw=true) for full details.
 
 
  -  3.2. Sources as binary files
@@ -121,7 +121,7 @@ Refer to the [JSON schema](https://github.com/openvinotoolkit/openvino/tree/mast
 mpit.py -m <model_path> -p <provider> -i
  {\"<input_name>\": {\"files\": [\"<file_path_0>\", \"<file_path_1>\"], \"type\": \"bin\", \"shape\": [1, 3, 299, 299], \"layout\": \"NCHW\", \"element_type\": \"float32\"}}
 ```
-Please take look at the [JSON schema](https://github.com/openvinotoolkit/openvino/tree/master/src/plugins/intel_npu/tools/multi-provider-inference-tool/schema/input_source.json) for more information.
+Please take look at the [JSON schema](schema/input_source.json?raw=true) for more information.
 
 As shown, using binary files as input sources requires explicitly specifying additional fields: `shape`, `layout`, and `element_type`.
 To simplify repeated usage, the tool automatically stores metadata of the last used inputs in model-local JSON files:
@@ -141,11 +141,11 @@ or
 respectively.
 
 
-4. You can specify model pre- and post-processing using the `-ppm` argument. This argument must contain a JSON object matching the structure provided in the model info JSON, and must conform to the [JSON schema](https://github.com/openvinotoolkit/openvino/tree/master/src/plugins/intel_npu/tools/multi-provider-inference-tool/schema/model.json)
+4. You can specify model pre- and post-processing using the `-ppp` argument. This argument must contain a JSON object matching the structure provided in the model info JSON, and must conform to the [JSON schema](schema/model.json)
 
 # Testing
 
-If you have already followed the [ Setup virtual environments](#setup-virtual-environments) section, simply activate the test virtual environment:
+If you have already followed the [Setup virtual environments](#setup-virtual-environments) section, simply activate the test virtual environment:
 
 ```.venv_tests/Scripts/activate```
 
