@@ -117,6 +117,7 @@ static void create_data(ProgramBuilder& p, const ov::Shape& const_shape, const s
         if (source_buffer) {
             auto constant_id = weight_sharing::Extension::get_constant_id(*op);
             cross_device_weight_shared_buffer = weight_sharing::get_buffer(*p.get_weight_sharing_ctx(), constant_source_id, constant_id);
+            GPU_DEBUG_LOG << "[" << initialconstPrimID << ": is a shared constant] source id: " << constant_source_id << ", constant id: " << constant_id << ", source buffer: " << source_buffer.get() << ", shared buffer: " << cross_device_weight_shared_buffer.get() << std::endl;
         }
     }
     const auto cache_key = std::make_tuple(data, const_shape, op->get_output_element_type(0), cross_device_weight_shared_buffer != nullptr);
@@ -125,6 +126,9 @@ static void create_data(ProgramBuilder& p, const ov::Shape& const_shape, const s
 
     if (bufIter != p.blobMemCache.end()) {
         constPrimID = bufIter->second;
+        if (cross_device_weight_shared_buffer != nullptr) {
+            p.register_remote_constant(constPrimID);
+        }
         p.primitive_ids[initialconstPrimID] = constPrimID;
         p.profiling_ids.push_back(initialconstPrimID);
     } else {

@@ -963,6 +963,27 @@ bool constant_can_be_shared(const ov::op::v0::Constant& constant, const std::vec
     return !needs_conversion;
 }
 
+bool constant_can_be_shared(const ov::op::v0::Constant& constant, const std::vector<ov::SoPtr<ov::IRemoteContext>> &shared_ctxs) {
+    if (constant.get_byte_size() < static_cast<size_t>(ov::util::get_system_page_size())) {
+        return false;
+    }
+
+    bool needs_conversion = false;
+    // TODO check types of remote context
+    // The code below is written in assumption that we have NPU and GPU as the remote contexts
+    (void)shared_ctxs;
+    if (ov::shape_size(constant.get_shape()) == 1 &&
+        constant.get_output_element_type(0) == ov::element::f64) {
+        // If a constant has element type f64 but contains no elements (empty tensor),
+        // GPU have to convert it to f32 because the GPU plugin only supports the f32 data type internally.
+        needs_conversion = true;
+    } else if (constant.get_output_element_type(0) == ov::element::u16 ||
+        constant.get_output_element_type(0) == ov::element::i16) {
+        needs_conversion = true;
+    }
+    return !needs_conversion;
+}
+
 void ov::npuw::LLMCompiledModel::assign_shared_weight_to_model_if_possible(const std::shared_ptr<ov::Model> model, const std::shared_ptr<const ov::IPlugin>& plugin,
 const ov::AnyMap& properties) {
 
