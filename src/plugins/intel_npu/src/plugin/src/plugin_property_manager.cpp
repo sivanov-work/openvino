@@ -826,6 +826,7 @@ FilteredConfig PluginPropertyManager::getConfigWithCompilerPropertiesDisabled(co
 
     auto pluginProperties = properties;
     exclude_model_ptr_from_map(pluginProperties);
+    erase_model_sharing_context(pluginProperties);
 
     if (compilerConfigsFilteredByCompiler) {
         disableCompilerProperties(updatedConfig, _backend);

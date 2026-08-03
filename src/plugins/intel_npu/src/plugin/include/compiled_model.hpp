@@ -74,6 +74,7 @@ private:
 
     std::shared_ptr<IGraph> _graph;
 
+    ov::internal::WeightSharingCtxPtr _weightSharingContext;
     std::shared_ptr<ov::threading::ITaskExecutor> _resultExecutor = nullptr;
     mutable std::once_flag _streamExecutorsInitFlag;
 
