@@ -59,6 +59,7 @@ bool Const::operator==(const Const& other) const {
 
 ov::Tensor Const::eval() const {
     if (m_node) {
+        //TODO check whether the constant is shared (somehow) and return the shared tensor by importing constant memory instead of copying it
         return ov::npuw::util::copy_tensor_from_const(m_node);
     }
 

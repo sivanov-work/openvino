@@ -149,6 +149,14 @@ void Bank::evaluate_and_allocate_on_device(Bank::DeviceBank& device_bank,
         NPUW_ASSERT(iter_device_registered != device_bank.registered_tensors.end() &&
                     "Tensor should be registered first!");
         auto uid = iter_device_registered->second;
+        // TODO in case of existing weight shared on GPU and NPU, we must not allocate a new tensor in the resident memory of a device,
+        // instead we returns tensor with imported memory from the shared weight.
+        // So in this case using of Meta won't work: it either need to be extended or different kind of processing needs to be added.
+        // Consider using childs of Meta for this case, e.g. MetaWithSharedMemory or something like that.
+        // OR
+        // add a new HYBRID device case and introduce evaluate_and_allocate_on_hybrid_device
+        // DECISION:
+        // It's also possible to enforce `device_for_alloc == "NPU,GPU"` act as "CPU" and then insert tensors for each of GPU,NPU individually
         uids_to_allocated.push_back({lt.eval_meta(), ov::Tensor(), uid});
     }
     // Sort by UIDs, lowest first
