@@ -463,7 +463,9 @@ WeightlessGraph::InputData WeightlessGraph::allocate_inputs(
     // several weights coul be shared In this case we don't need to allocate the signle buffer for such weight, we can
     // reuse it instead. But we following the current logic, we still have to allocate a single buffer for non-shared
     // weights. Implication: we need to return multiple ZeroTensors instead of a single one.
-    (void)get_initialize_options_unsafe().weightSharingContext;
+    // For the weight sharing case, use this weightSharingContext to get the shared weights and reuse them instead of allocating a new buffer.
+    (void)get_init_options_unsafe().weightSharingContext;
+
     const std::shared_ptr<ZeroTensor> initInputsAllocatedTensor =
         std::make_shared<ZeroTensor>(_zeroInitStruct, ov::element::Type_t::u8, ov::Shape({initInputsByteSize}), true);
 

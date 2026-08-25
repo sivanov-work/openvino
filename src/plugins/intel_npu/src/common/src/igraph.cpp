@@ -39,6 +39,11 @@ void IGraph::initialize(const FilteredConfig& config, InitializeOptions options)
     initialize_impl(config);
 }
 
+InitializeOptions IGraph::get_init_options_unsafe() const {
+    std::lock_guard<std::mutex> lock(_initialize_mutex);
+    return _init_options;
+}
+
 void IGraph::initialize_impl(const FilteredConfig&) {
     OPENVINO_THROW("initialize_impl not implemented");
 }

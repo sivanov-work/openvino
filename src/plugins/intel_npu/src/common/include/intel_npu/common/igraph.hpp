@@ -16,6 +16,7 @@
 #include "openvino/runtime/itensor.hpp"
 #include "openvino/runtime/profiling_info.hpp"
 #include "openvino/runtime/so_ptr.hpp"
+#include "openvino/runtime/internal_properties.hpp"
 
 namespace intel_npu {
 
@@ -23,7 +24,7 @@ enum class BlobType : uint8_t { ELF, LLVM, BYTECODE };
 struct InitializeOptions {
     ov::internal::WeightSharingCtxPtr weightSharingContext;
 };
-}
+
 class IGraph : public std::enable_shared_from_this<IGraph> {
 public:
     IGraph() = default;
@@ -105,12 +106,11 @@ public:
 
 protected:
     virtual void initialize_impl(const FilteredConfig& config);
-    const InitializeOptions& get_init_options_unsafe() const {
-        return _init_options;
-    }
+    InitializeOptions get_init_options_unsafe() const;
+
     // Used to protect graph initialization (including zero pipeline creation) in the graph. Initialization should
     // happen only once per graph, typically when the graph is first used (e.g. when the first inference starts)
-    std::mutex _initialize_mutex;
+    mutable std::mutex _initialize_mutex;
     std::atomic<bool> _init_completed{false};
     InitializeOptions _init_options{};
 };
