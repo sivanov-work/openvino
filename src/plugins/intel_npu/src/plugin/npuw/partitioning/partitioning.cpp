@@ -1801,7 +1801,7 @@ void Partitioner::createFunction(FunctionPipeline& func_ggg) {
             LOG_BLOCK();
 
             if (ov::op::util::is_constant(input_node) && func_ggg.consts_to_keep.count(input_node) == 0) {  // (n)/1/i
-                LOG_DEBUG("Handling a Constant input " << prod_output);
+                LOG_DEBUG("-S- Handling a Constant input " << prod_output);
                 LOG_BLOCK();
 
                 auto new_param = std::make_shared<ov::op::v0::Parameter>(prod_output.get_element_type(),
@@ -1815,7 +1815,8 @@ void Partitioner::createFunction(FunctionPipeline& func_ggg) {
 
                 LOG_DEBUG("Register " << prod_output << " in the function closure");
                 funcall._lazy_closure.push_back(
-                    LazyTensor(std::static_pointer_cast<ov::op::v0::Constant>(input_node)));  // (n)/1/i/c
+                    LazyTensor(std::static_pointer_cast<ov::op::v0::Constant>(input_node),
+                               part_ctx.ov_core_weight_ctx));  // (n)/1/i/c
             } else if (ov::op::util::is_parameter(input_node)) {
                 LOG_DEBUG("Handling a Parameter input " << prod_output);
                 LOG_BLOCK();
@@ -1986,7 +1987,8 @@ void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
                     LOG_DEBUG("Register " << prod_output << " in the function closure[" << param_idx
                                           << "] (via prototype " << proto_layer_name << ")");
                     funcall._lazy_closure[param_idx - function._param_offset] =
-                        LazyTensor(std::static_pointer_cast<ov::op::v0::Constant>(input_node));  // (t)/1/c
+                        LazyTensor(std::static_pointer_cast<ov::op::v0::Constant>(input_node),
+                                   part_ctx.ov_core_weight_ctx);  // (t)/1/c
                 }
             }  // for (inputs)
         }  // for(nodes)

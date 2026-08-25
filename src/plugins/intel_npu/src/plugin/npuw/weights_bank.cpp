@@ -169,8 +169,7 @@ void Bank::evaluate_and_allocate_on_device(Bank::DeviceBank& device_bank,
     // Allocate memory sequentially - in order of UID
     auto remote_ctx = m_core->get_default_context(device)._ptr;
     for (auto&& allocated : uids_to_allocated) {
-        ov::SoPtr<ov::ITensor> remote_tensor =
-            remote_ctx->create_host_tensor(allocated.meta.type, allocated.meta.shape);
+        ov::SoPtr<ov::ITensor> remote_tensor = allocated.meta.createTensor(remote_ctx);
         allocated = {allocated.meta, ov::make_tensor(remote_tensor), allocated.uid};
     }
 

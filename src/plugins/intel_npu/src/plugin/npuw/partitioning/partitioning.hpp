@@ -206,6 +206,7 @@ struct Partitioning {
 struct PartitioningContext {
     bool use_host_gather_quant = false;
     const ov::npuw::v1::subgraphs::PatternRegistry* subgraph_patterns = nullptr;
+    ov::npuw::weights::WeightSharingCtxPtr ov_core_weight_ctx = nullptr;
     mutable std::unordered_map<std::string, std::shared_ptr<ov::Model>> tagged_models;
 };
 

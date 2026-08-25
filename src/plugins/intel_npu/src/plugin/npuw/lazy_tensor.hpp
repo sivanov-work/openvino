@@ -14,14 +14,23 @@
 #include "serialization.hpp"
 
 namespace ov {
+namespace weight_sharing {
+struct Context;
+}  // namespace weight_sharing
+}  // namespace ov
+
+namespace ov {
 namespace npuw {
 namespace weights {
+using WeightSharingCtxPtr = std::shared_ptr<const ov::weight_sharing::Context>;
+
 // Forward declaration
 class LazyTensor;
 struct LazyTensorImpl;
 
 namespace op {
 class Const;
+class SharedConst;
 class Concat;
 class Unpack;
 class Permute;
@@ -37,6 +46,7 @@ public:
     };
 
     using Transform = std::variant<ov::npuw::weights::op::Const,
+                                   ov::npuw::weights::op::SharedConst,
                                    ov::npuw::weights::op::Concat,
                                    ov::npuw::weights::op::Unpack,
                                    ov::npuw::weights::op::Permute,
@@ -44,7 +54,8 @@ public:
                                    ov::npuw::weights::op::Gather>;
 
     LazyTensor() = default;
-    LazyTensor(const std::shared_ptr<ov::op::v0::Constant>& const_ptr);
+    LazyTensor(const std::shared_ptr<ov::op::v0::Constant>& const_ptr,
+               const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx);
     LazyTensor(const std::vector<LazyTensor>& to_concat, const std::size_t axis);  // construct from concat
     LazyTensor(const LazyTensor& cw,
                const LazyTensor& cz,
@@ -67,10 +78,22 @@ public:
     std::vector<Transform> get_transformations() const;
     void detach();
 
+    struct Meta;
+    struct MetaTensorAllocationStrategy {
+        virtual ov::SoPtr<ov::ITensor> operator() (ov::SoPtr<ov::IRemoteContext> ctx,  const Meta& meta) const = 0;
+    };
+
     struct Meta {
+        Meta() = default;
+        Meta(ov::Shape shape, ov::element::Type type, std::shared_ptr<MetaTensorAllocationStrategy> tensor_alloc_strategy = getDefaultTensorAllocationStrategy());
         ov::Shape shape;
         ov::element::Type type;
+        ov::SoPtr<ov::ITensor> createTensor(ov::SoPtr<ov::IRemoteContext> ctx) const;
+    private:
+        static std::shared_ptr<MetaTensorAllocationStrategy> getDefaultTensorAllocationStrategy();
+        std::shared_ptr<MetaTensorAllocationStrategy> tensor_allocation_strategy = getDefaultTensorAllocationStrategy();
     };
+
     Meta eval_meta() const;
 
     void read_weight(const ov::npuw::s11n::WeightsContext& ctx);
@@ -116,6 +139,39 @@ private:
     // FIXME: special case when a new Constant was added into the model,
     // then made into LazyTensor during folding. We need to keep a copy of it,
     // so during weightless deserialization we can access it.
+    mutable ov::Tensor m_copied_if_not_in_model;
+};
+
+class SharedConst {
+    friend struct ov::npuw::weights::LazyTensorImpl;
+
+public:
+    static constexpr std::uint16_t kVersion = 0u;
+
+    SharedConst() = default;
+    SharedConst(const std::shared_ptr<ov::op::v0::Constant>& n,
+                const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx);
+    std::size_t hash() const;
+    bool operator==(const SharedConst& other) const;
+    ov::Tensor eval() const;
+    LazyTensor::Meta eval_meta() const;
+    void read_weight(const ov::npuw::s11n::WeightsContext& ctx);
+    void detach();
+    void serialize(ov::npuw::orc::Stream& stream);
+
+private:
+    std::shared_ptr<ov::op::v0::Constant> m_node = nullptr;
+    ov::element::Type m_cached_type;
+    ov::Shape m_cached_shape;
+    const void* m_cached_ptr = nullptr;
+    std::size_t m_offset = 0;
+    std::size_t m_byte_size = 0;
+    ov::Tensor m_read_from_bin;
+    std::string m_weights_path;
+    ov::FileHandleProvider m_handle_provider = nullptr;
+    mutable ov::npuw::s11n::WeightsPtr m_mmaped_weights = nullptr;
+    ov::npuw::weights::WeightSharingCtxPtr m_shared_ctx = nullptr;
+    mutable std::shared_ptr<ov::AlignedBuffer> m_shared_buffer = nullptr;
     mutable ov::Tensor m_copied_if_not_in_model;
 };
 

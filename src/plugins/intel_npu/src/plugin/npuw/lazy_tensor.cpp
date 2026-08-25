@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "logging.hpp"
+#include "openvino/core/weight_sharing_util.hpp"
 #include "openvino/core/rt_info/weightless_caching_attributes.hpp"
 #include "openvino/op/util/op_types.hpp"
 #include "openvino/reference/convert.hpp"
@@ -16,11 +17,49 @@
 #include "openvino/runtime/shared_buffer.hpp"
 #include "openvino/util/file_util.hpp"
 #include "openvino/util/mmap_object.hpp"
+#include "openvino/runtime/intel_npu/remote_properties.hpp"
 #include "orc.hpp"
 #include "util.hpp"
 
 using ov::npuw::weights::LazyTensor;
 
+namespace ov {
+namespace npuw {
+namespace weights {
+
+struct HostTensorAllocation : public LazyTensor::MetaTensorAllocationStrategy {
+    ov::SoPtr<ov::ITensor> operator() (ov::SoPtr<ov::IRemoteContext> ctx, const LazyTensor::Meta& meta) const override {
+        return ctx->create_host_tensor(meta.type, meta.shape);
+    }
+};
+
+struct RemoteTensorAllocation : public LazyTensor::MetaTensorAllocationStrategy {
+    RemoteTensorAllocation(std::shared_ptr<ov::AlignedBuffer> shared_buffer)
+        : m_shared_buffer(std::move(shared_buffer)) {}
+    //aligned buffer from constant store!!!!!  as member
+    ov::SoPtr<ov::ITensor> operator() (ov::SoPtr<ov::IRemoteContext> ctx, const LazyTensor::Meta& meta) const override {
+        //
+        try {
+                // The public remote-context route, so that no level-zero header is needed here.
+                // u8 with a flat shape gives an import size that is exactly the bank size.
+                ov::AnyMap params = {{ov::intel_npu::mem_type.name(), ov::intel_npu::MemType::CPU_VA},
+                                     {ov::intel_npu::mem_handle.name(), const_cast<void*>(m_shared_buffer->get_ptr())}};
+                return ctx->create_tensor(ov::element::u8, ov::Shape{m_shared_buffer->size()}, params);
+            } catch (const std::exception& e) {
+                // A refused import is not an error. Every entry of this bank falls back to the
+                // allocate-and-copy path below, which is what this function did before R5a.
+                LOG_WARN("[NPUW] R5a: could not import a shared weight bank, falling back to a copy: " << e.what());
+                HostTensorAllocation host_alloc;
+                return host_alloc(ctx, meta);
+            }
+        //
+    }
+private:
+    std::shared_ptr<ov::AlignedBuffer> m_shared_buffer;
+};
+}
+}
+}
 namespace ov {
 namespace npuw {
 namespace weights {
@@ -59,7 +98,6 @@ bool Const::operator==(const Const& other) const {
 
 ov::Tensor Const::eval() const {
     if (m_node) {
-        //TODO check whether the constant is shared (somehow) and return the shared tensor by importing constant memory instead of copying it
         return ov::npuw::util::copy_tensor_from_const(m_node);
     }
 
@@ -86,7 +124,7 @@ ov::Tensor Const::eval() const {
 
 LazyTensor::Meta Const::eval_meta() const {
     if (m_node) {
-        return {m_node->get_shape(), m_node->get_element_type()};
+        return LazyTensor::Meta(m_node->get_shape(), m_node->get_element_type());
     }
 
     // Weightless import case
@@ -144,6 +182,159 @@ void Const::detach() {
     m_node.reset();
     m_read_from_bin = ov::Tensor();
     m_mmaped_weights.reset();
+}
+
+SharedConst::SharedConst(const std::shared_ptr<ov::op::v0::Constant>& n,
+                         const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx)
+    : m_node(n),
+      m_shared_ctx(shared_ctx) {
+    m_cached_type = m_node->get_element_type();
+    m_cached_shape = m_node->get_shape();
+    m_cached_ptr = m_node->get_data_ptr();
+    m_byte_size = m_node->get_byte_size();
+
+    auto rt_info = m_node->get_rt_info();
+    auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
+    if (weightless_cache_attr != rt_info.end()) {
+        m_offset = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>().bin_offset;
+    } else {
+        LOG_WARN("Some pattern introduced a new Constant node not present in the original weights file. We need to "
+                 "keep it in case export occurs. This will increase memory consumption.");
+        m_copied_if_not_in_model = ov::npuw::util::copy_tensor_from_const(m_node);
+    }
+}
+
+std::size_t SharedConst::hash() const {
+    std::size_t seed = std::hash<const void*>()(m_cached_ptr) + 0x9e3779b9;
+    seed ^= m_cached_type.hash() + 0x9e3779b9;
+    for (const auto& dim : m_cached_shape) {
+        seed ^= std::hash<std::size_t>()(dim) + 0x9e3779b9;
+    }
+    return seed;
+}
+
+bool SharedConst::operator==(const SharedConst& other) const {
+    return (m_cached_type == other.m_cached_type && m_cached_shape == other.m_cached_shape &&
+            m_cached_ptr == other.m_cached_ptr);
+}
+
+ov::Tensor SharedConst::eval() const {
+    if (m_node) {
+        if (m_shared_ctx) {
+            // Same lookup pattern as GPU plugin: source id + constant id in shared context.
+            auto constant_source_id = ov::weight_sharing::Extension::get_constant_source_id(*m_node);
+            auto source_buffer = ov::weight_sharing::Extension::get_constant_source_buffer(*m_node);
+            if (source_buffer) {
+                auto constant_id = ov::weight_sharing::Extension::get_constant_id(*m_node);
+                m_shared_buffer = ov::weight_sharing::get_buffer(*m_shared_ctx, constant_source_id, constant_id);
+                if (m_shared_buffer) {
+                    return ov::Tensor(m_cached_type, m_cached_shape, m_shared_buffer->get_ptr());
+                }
+            }
+        }
+        return ov::npuw::util::copy_tensor_from_const(m_node);
+    }
+
+    // Weightless import case. Mmmap CPU weight on demand to avoid allocating all weights at once.
+    if (!m_weights_path.empty() || m_handle_provider) {
+        NPUW_ASSERT(!m_read_from_bin &&
+                    "Trying to read weight from weights file, but the weight has been already deserialized!");
+        std::shared_ptr<ov::MappedMemory> mapped_memory;
+        // Use handle_provider if available, otherwise use default mmap
+
+
+        // -S- Ensure that weights are aligned to system page size.
+        // This is required for cross-device memory importing.
+        // They must be, as they were writted as SharedConst at some point.
+        // So either throw an exception or align them as it was done in LLMCompiledModel
+        if (m_handle_provider) {
+            ov::FileHandle handle = m_handle_provider();
+            mapped_memory = ov::load_mmap_object(handle);
+        } else {
+            mapped_memory = ov::load_mmap_object(ov::util::make_path(m_weights_path));
+        }
+        m_mmaped_weights =
+            std::make_shared<ov::npuw::s11n::Weights>(mapped_memory->data(), mapped_memory->size(), mapped_memory);
+        return ov::Tensor(m_cached_type, m_cached_shape, m_mmaped_weights->get_ptr(m_offset));
+    }
+
+    NPUW_ASSERT(m_read_from_bin && "Underlying data should have been read first! Or the tensor is already detached.");
+    return m_read_from_bin;
+}
+
+LazyTensor::Meta SharedConst::eval_meta() const {
+    if (m_node) {
+        if(m_shared_ctx) {
+            // Same lookup pattern as GPU plugin: source id + constant id in shared context.
+            auto constant_source_id = ov::weight_sharing::Extension::get_constant_source_id(*m_node);
+            auto source_buffer = ov::weight_sharing::Extension::get_constant_source_buffer(*m_node);
+            if (source_buffer) {
+                auto constant_id = ov::weight_sharing::Extension::get_constant_id(*m_node);
+                m_shared_buffer = ov::weight_sharing::get_buffer(*m_shared_ctx, constant_source_id, constant_id);
+                if (m_shared_buffer) {
+                    return LazyTensor::Meta(m_node->get_shape(), m_node->get_element_type(), std::make_shared<RemoteTensorAllocation>(m_shared_buffer));
+                }
+            }
+        }
+        OPENVINO_ASSERT(m_node, "SharedConst::eval_meta() called on a SharedConst without a Constant node.");
+    }
+
+    // Weightless import case
+    if (!m_weights_path.empty() || m_handle_provider) {
+        return {m_cached_shape, m_cached_type};
+    }
+
+    NPUW_ASSERT(m_read_from_bin && "Underlying data should have been read first!");
+    return {m_read_from_bin.get_shape(), m_read_from_bin.get_element_type()};
+}
+
+void SharedConst::read_weight(const ov::npuw::s11n::WeightsContext& ctx) {
+    NPUW_ASSERT(!m_node &&
+                "LazyTensor can only read weight when it's being deserialized and not created from a Constant!");
+    if (m_read_from_bin) {
+        // already deserialized, see the comment in serialize() for more details
+        return;
+    }
+    if (ctx.weights) {
+        if (ctx.bf16_consts.find({m_offset, m_byte_size}) != ctx.bf16_consts.end()) {
+            NPUW_ASSERT(m_cached_type == ov::element::f16);
+            // Read original bf16 weight
+            auto bf16_tensor = ov::Tensor(ov::element::bf16, m_cached_shape);
+            NPUW_ASSERT(bf16_tensor.get_byte_size() == m_byte_size);
+            std::memcpy(bf16_tensor.data(), ctx.weights->get_ptr(m_offset), m_byte_size);
+
+            m_read_from_bin = ov::Tensor(m_cached_type, m_cached_shape);
+            NPUW_ASSERT(bf16_tensor.get_size() == m_read_from_bin.get_size());
+            // Transform bf16 to f16 tensor
+            using dst_type = typename element_type_traits<ov::element::Type_t::f16>::value_type;
+            auto src_data = bf16_tensor.data<ov::bfloat16>();
+            auto dst_data = m_read_from_bin.data<dst_type>();
+            ov::reference::convert_from_bf16_to_f16_with_clamp(src_data, dst_data, m_read_from_bin.get_size());
+        } else {
+            // Each LazyTensor will mmap the whole weights file on demand (in eval()).
+            // It doesn't introduce extra allocation, however it allows to gradually 1 by 1
+            // read mmaped CPU weights and allocate them on device without loading all the weights first.
+            // Thus the memory consumption during import is greatly reduced but at the slight cost of performance.
+            NPUW_ASSERT(!ctx.weights_path.empty() || ctx.handle_provider);
+            // Just save weights_path for the eval() to call the actual mmap.
+            m_weights_path = ctx.weights_path;
+            // Also save handle_provider if available
+            m_handle_provider = ctx.handle_provider;
+        }
+    } else {
+        auto it = ctx.consts_cache.find({m_offset, m_byte_size});
+        NPUW_ASSERT(it != ctx.consts_cache.end() && "Couldn't find Constant in cache!");
+        m_read_from_bin = ov::npuw::util::tensor_from_const(it->second);
+        NPUW_ASSERT(m_read_from_bin.get_byte_size() == m_byte_size && m_read_from_bin.get_shape() == m_cached_shape &&
+                    m_read_from_bin.get_element_type() == m_cached_type);
+    }
+}
+
+void SharedConst::detach() {
+    m_node.reset();
+    m_read_from_bin = ov::Tensor();
+    m_mmaped_weights.reset();
+    m_shared_buffer.reset();
 }
 
 std::size_t Concat::hash() const {
@@ -369,6 +560,7 @@ enum class TransformType : std::uint16_t {
     PERMUTE = 4,
     CONVERT = 5,
     GATHER = 6,
+    SHARED_CONST = 7,
 };
 
 struct LazyTensorImpl {
@@ -409,6 +601,10 @@ namespace {
 
 ov::npuw::weights::TransformType get_transform_type(const ov::npuw::weights::op::Const&) {
     return ov::npuw::weights::TransformType::CONST;
+}
+
+ov::npuw::weights::TransformType get_transform_type(const ov::npuw::weights::op::SharedConst&) {
+    return ov::npuw::weights::TransformType::SHARED_CONST;
 }
 
 ov::npuw::weights::TransformType get_transform_type(const ov::npuw::weights::op::Concat&) {
@@ -458,6 +654,33 @@ void Const::serialize(ov::npuw::orc::Stream& stream) {
             stream & m_read_from_bin;
         }
     }
+}
+
+void SharedConst::serialize(ov::npuw::orc::Stream& stream) {
+    std::string type_str;
+    if (stream.output()) {
+        type_str = m_cached_type.to_string();
+    }
+    stream & type_str & m_cached_shape & m_offset & m_byte_size;
+    if (stream.input()) {
+        m_cached_type = ov::element::Type(type_str);
+    }
+
+    bool contains_weight = static_cast<bool>(m_copied_if_not_in_model);
+    stream & contains_weight;
+    if (contains_weight) {
+        if (stream.output()) {
+            stream & m_copied_if_not_in_model;
+            m_copied_if_not_in_model = ov::Tensor();
+        } else {
+            stream & m_read_from_bin;
+        }
+    }
+
+    // TODO don't forget to restore m_shared_ctx somehow when deserializing, 
+    // otherwise the SharedConst will not be able to get the shared buffer.
+    // Probably it is possible to assing it in the read_weight() method, 
+    // as it is not clear how to get the shared context from the stream.
 }
 
 void Concat::serialize(ov::npuw::orc::Stream& stream) {
@@ -525,6 +748,9 @@ void LazyTensorImpl::serialize(ov::npuw::orc::Stream& stream) {
         break;
     case TransformType::CONST:
         m_transform.emplace<op::Const>(ov::npuw::orc::load_versioned_payload<op::Const>(section));
+        break;
+    case TransformType::SHARED_CONST:
+        m_transform.emplace<op::SharedConst>(ov::npuw::orc::load_versioned_payload<op::SharedConst>(section));
         break;
     case TransformType::CONVERT:
         m_transform.emplace<op::Convert>(ov::npuw::orc::load_versioned_payload<op::Convert>(section));
@@ -630,6 +856,9 @@ void LazyTensorImpl::get_transformations(std::vector<LazyTensor::Transform>& vec
                    [](const op::Const& op) {
                        // do nothing
                    },
+                   [](const op::SharedConst& op) {
+                       // do nothing
+                   },
                    [&vec](const op::Convert& op) {
                        auto next_tr = op.tensor.get_transformations();
                        vec.insert(vec.end(), next_tr.begin(), next_tr.end());
@@ -661,8 +890,37 @@ void LazyTensorImpl::detach() {
                m_transform);
 }
 
-LazyTensor::LazyTensor(const std::shared_ptr<ov::op::v0::Constant>& const_ptr)
-    : m_impl(std::make_shared<LazyTensorImpl>(op::Const(const_ptr))) {}
+LazyTensor::Meta::Meta(ov::Shape shape, ov::element::Type type, std::shared_ptr<MetaTensorAllocationStrategy> tensor_alloc_strategy)
+    : shape(shape), type(type), tensor_allocation_strategy(std::move(tensor_alloc_strategy)) {}
+
+ov::SoPtr<ov::ITensor> LazyTensor::Meta::createTensor(ov::SoPtr<ov::IRemoteContext> ctx) const {
+    return tensor_allocation_strategy->operator()(ctx, *this);
+}
+
+std::shared_ptr<LazyTensor::MetaTensorAllocationStrategy> LazyTensor::Meta::getDefaultTensorAllocationStrategy() {
+    return std::make_shared<HostTensorAllocation>();
+}
+
+LazyTensor::LazyTensor(const std::shared_ptr<ov::op::v0::Constant>& const_ptr,
+                       const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx) {
+    bool use_shared_const = false;
+    if (shared_ctx) {
+        // Same lookup pattern as GPU constant implementation: source id + constant id lookup in sharing context.
+        auto constant_source_id = ov::weight_sharing::Extension::get_constant_source_id(*const_ptr);
+        auto source_buffer = ov::weight_sharing::Extension::get_constant_source_buffer(*const_ptr);
+        if (source_buffer) {
+            auto constant_id = ov::weight_sharing::Extension::get_constant_id(*const_ptr);
+            use_shared_const =
+                static_cast<bool>(ov::weight_sharing::get_buffer(*shared_ctx, constant_source_id, constant_id));
+        }
+    }
+
+    if (use_shared_const) {
+        m_impl = std::make_shared<LazyTensorImpl>(op::SharedConst(const_ptr, shared_ctx));
+    } else {
+        m_impl = std::make_shared<LazyTensorImpl>(op::Const(const_ptr));
+    }
+}
 LazyTensor::LazyTensor(const std::vector<LazyTensor>& to_concat, const std::size_t axis)
     : m_impl(std::make_shared<LazyTensorImpl>(op::Concat(to_concat, axis))) {}
 LazyTensor::LazyTensor(const LazyTensor& cw,
