@@ -29,6 +29,7 @@ namespace weights {
 
 struct HostTensorAllocation : public LazyTensor::MetaTensorAllocationStrategy {
     ov::SoPtr<ov::ITensor> operator() (ov::SoPtr<ov::IRemoteContext> ctx, const LazyTensor::Meta& meta) const override {
+        LOG_DEBUG("LazyTensor: allocating a host tensor for shape: " << meta.shape << ", type: " << meta.type);
         return ctx->create_host_tensor(meta.type, meta.shape);
     }
 };
@@ -44,11 +45,15 @@ struct RemoteTensorAllocation : public LazyTensor::MetaTensorAllocationStrategy 
                 // u8 with a flat shape gives an import size that is exactly the bank size.
                 ov::AnyMap params = {{ov::intel_npu::mem_type.name(), ov::intel_npu::MemType::CPU_VA},
                                      {ov::intel_npu::mem_handle.name(), const_cast<void*>(m_shared_buffer->get_ptr())}};
-                return ctx->create_tensor(ov::element::u8, ov::Shape{m_shared_buffer->size()}, params);
+                const auto desc = m_shared_buffer->get_descriptor();
+                LOG_INFO("SharedConst importing a shared weight: source_id: " << (desc ? desc->get_id() : -1) << ", constant id: " << (desc ? desc->get_offset() : -1) << ", size: " << m_shared_buffer->size());
+                //-S- supposingly we need to hold a reference on SOURCE_ID for constant, why?
+                // return ctx->create_tensor(ov::element::u8, ov::Shape{m_shared_buffer->size()}, params);
+                return ov::make_tensor(meta.type, meta.shape, m_shared_buffer->get_ptr());
             } catch (const std::exception& e) {
                 // A refused import is not an error. Every entry of this bank falls back to the
                 // allocate-and-copy path below, which is what this function did before R5a.
-                LOG_WARN("[NPUW] R5a: could not import a shared weight bank, falling back to a copy: " << e.what());
+                LOG_WARN("[NPUW] could not import a shared weight bank, falling back to a copy: " << e.what());
                 HostTensorAllocation host_alloc;
                 return host_alloc(ctx, meta);
             }
@@ -205,7 +210,10 @@ SharedConst::SharedConst(const std::shared_ptr<ov::op::v0::Constant>& n,
 }
 
 std::size_t SharedConst::hash() const {
-    std::size_t seed = std::hash<const void*>()(m_cached_ptr) + 0x9e3779b9;
+    // Keep hash structure aligned with Const, but add a type-specific salt
+    // so SharedConst and Const are distinguishable by hash.
+    std::size_t seed = 0x6d5a56a1;
+    seed ^= std::hash<const void*>()(m_cached_ptr) + 0x9e3779b9;
     seed ^= m_cached_type.hash() + 0x9e3779b9;
     for (const auto& dim : m_cached_shape) {
         seed ^= std::hash<std::size_t>()(dim) + 0x9e3779b9;
@@ -215,11 +223,12 @@ std::size_t SharedConst::hash() const {
 
 bool SharedConst::operator==(const SharedConst& other) const {
     return (m_cached_type == other.m_cached_type && m_cached_shape == other.m_cached_shape &&
-            m_cached_ptr == other.m_cached_ptr);
+            m_cached_ptr == other.m_cached_ptr && m_shared_ctx == other.m_shared_ctx && m_shared_buffer == other.m_shared_buffer);
 }
 
 ov::Tensor SharedConst::eval() const {
     if (m_node) {
+        LOG_VERB("LazyTensor: evaluating SharedConst: " << m_node->get_friendly_name() << ", shape: " << m_node->get_shape() << ", type: " << m_node->get_element_type());
         if (m_shared_ctx) {
             // Same lookup pattern as GPU plugin: source id + constant id in shared context.
             auto constant_source_id = ov::weight_sharing::Extension::get_constant_source_id(*m_node);
@@ -228,6 +237,8 @@ ov::Tensor SharedConst::eval() const {
                 auto constant_id = ov::weight_sharing::Extension::get_constant_id(*m_node);
                 m_shared_buffer = ov::weight_sharing::get_buffer(*m_shared_ctx, constant_source_id, constant_id);
                 if (m_shared_buffer) {
+                    const auto desc = m_shared_buffer->get_descriptor();
+                    LOG_DEBUG("LazyTensor: SharedConst reusing memory from a shared weight: source_id: " << (desc ? desc->get_id() : -1) << ", constant id: " << (desc ? desc->get_offset() : -1) << ", size: " << m_shared_buffer->size());
                     return ov::Tensor(m_cached_type, m_cached_shape, m_shared_buffer->get_ptr());
                 }
             }
@@ -264,6 +275,7 @@ ov::Tensor SharedConst::eval() const {
 
 LazyTensor::Meta SharedConst::eval_meta() const {
     if (m_node) {
+        LOG_VERB("LazyTensor: evaluating metadata for SharedConst: " << m_node->get_friendly_name() << ", shape: " << m_node->get_shape() << ", type: " << m_node->get_element_type());
         if(m_shared_ctx) {
             // Same lookup pattern as GPU plugin: source id + constant id in shared context.
             auto constant_source_id = ov::weight_sharing::Extension::get_constant_source_id(*m_node);
@@ -272,6 +284,8 @@ LazyTensor::Meta SharedConst::eval_meta() const {
                 auto constant_id = ov::weight_sharing::Extension::get_constant_id(*m_node);
                 m_shared_buffer = ov::weight_sharing::get_buffer(*m_shared_ctx, constant_source_id, constant_id);
                 if (m_shared_buffer) {
+                    const auto desc = m_shared_buffer->get_descriptor();
+                    LOG_DEBUG("LazyTensor: SharedConst will prvide an remote tensor allocator for constant: source_id: " << (desc ? desc->get_id() : -1) << ", constant id: " << (desc ? desc->get_offset() : -1) << ", size: " << m_shared_buffer->size());
                     return LazyTensor::Meta(m_node->get_shape(), m_node->get_element_type(), std::make_shared<RemoteTensorAllocation>(m_shared_buffer));
                 }
             }
@@ -903,19 +917,19 @@ std::shared_ptr<LazyTensor::MetaTensorAllocationStrategy> LazyTensor::Meta::getD
 
 LazyTensor::LazyTensor(const std::shared_ptr<ov::op::v0::Constant>& const_ptr,
                        const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx) {
-    bool use_shared_const = false;
+    std::shared_ptr<ov::AlignedBuffer> constant_buffer;
     if (shared_ctx) {
         // Same lookup pattern as GPU constant implementation: source id + constant id lookup in sharing context.
         auto constant_source_id = ov::weight_sharing::Extension::get_constant_source_id(*const_ptr);
         auto source_buffer = ov::weight_sharing::Extension::get_constant_source_buffer(*const_ptr);
         if (source_buffer) {
             auto constant_id = ov::weight_sharing::Extension::get_constant_id(*const_ptr);
-            use_shared_const =
-                static_cast<bool>(ov::weight_sharing::get_buffer(*shared_ctx, constant_source_id, constant_id));
+            constant_buffer = ov::weight_sharing::get_buffer(*shared_ctx, constant_source_id, constant_id);
+            LOG_DEBUG("LazyTensor: found a shared constant: " <<  const_ptr->get_friendly_name() << ", source id: " << constant_source_id << ", constant id: " << constant_id << ", source buffer: " << source_buffer.get() << ", shared buffer: " << constant_buffer.get());
         }
     }
 
-    if (use_shared_const) {
+    if (constant_buffer) {
         m_impl = std::make_shared<LazyTensorImpl>(op::SharedConst(const_ptr, shared_ctx));
     } else {
         m_impl = std::make_shared<LazyTensorImpl>(op::Const(const_ptr));

@@ -180,6 +180,8 @@ void Bank::evaluate_and_allocate_on_device(Bank::DeviceBank& device_bank,
 
         auto transformed = stored_tensor.lt.eval();
         transformed.copy_to(allocated.allocated_tensor);
+        // -S- TODO need to check whether we need to copy memory or not
+        // in case of memory is imported we don;t need to to that
         stored_tensor.tensor = std::move(allocated.allocated_tensor);
 
         // Detach the evaluated LazyTensor from its memory here - when it is 100%

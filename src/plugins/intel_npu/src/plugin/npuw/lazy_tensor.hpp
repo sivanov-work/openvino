@@ -55,7 +55,7 @@ public:
 
     LazyTensor() = default;
     LazyTensor(const std::shared_ptr<ov::op::v0::Constant>& const_ptr,
-               const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx);
+               const ov::npuw::weights::WeightSharingCtxPtr& shared_ctx = nullptr);
     LazyTensor(const std::vector<LazyTensor>& to_concat, const std::size_t axis);  // construct from concat
     LazyTensor(const LazyTensor& cw,
                const LazyTensor& cz,
