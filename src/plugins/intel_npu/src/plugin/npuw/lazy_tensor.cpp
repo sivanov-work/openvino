@@ -11,6 +11,7 @@
 #include "logging.hpp"
 #include "openvino/core/memory_util.hpp"
 #include "openvino/core/rt_info/weightless_caching_attributes.hpp"
+#include "openvino/core/weight_sharing_util.hpp"
 #include "openvino/op/util/op_types.hpp"
 #include "openvino/reference/convert.hpp"
 #include "openvino/runtime/make_tensor.hpp"
@@ -32,10 +33,9 @@ Const::Const(const std::shared_ptr<ov::op::v0::Constant>& n) : m_node(n) {
     m_cached_ptr = m_node->get_data_ptr();
     m_byte_size = m_node->get_byte_size();
 
-    auto rt_info = m_node->get_rt_info();
-    auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
-    if (weightless_cache_attr != rt_info.end()) {
-        m_offset = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>().bin_offset;
+    std::optional<ov::weight_sharing::WeightOriginMetaData> origin = ov::weight_sharing::Extension::get_constant_origin(*m_node);
+    if (origin.has_value()) {
+        m_offset = origin->m_offset;
     } else {
         // See the comment in serialize() for more details
         LOG_WARN("Some pattern introduced a new Constant node not present in the original weights file. We need to "
@@ -138,6 +138,9 @@ void Const::read_weight(const ov::npuw::s11n::WeightsContext& ctx) {
             // Read original bf16 weight
             auto bf16_tensor = ov::Tensor(ov::element::bf16, m_cached_shape);
             NPUW_ASSERT(bf16_tensor.get_byte_size() == m_byte_size);
+
+
+            // -S- it dawns on me that ctx.weights is a source_if, m_offset is constant_id
             std::memcpy(bf16_tensor.data(), ctx.weights->get_ptr(m_offset), m_byte_size);
 
             m_read_from_bin = ov::Tensor(m_cached_type, m_cached_shape);
@@ -161,6 +164,8 @@ void Const::read_weight(const ov::npuw::s11n::WeightsContext& ctx) {
     } else {
         auto it = ctx.consts_cache.find({m_offset, m_byte_size});
         NPUW_ASSERT(it != ctx.consts_cache.end() && "Couldn't find Constant in cache!");
+
+        //-S- looks like we get_constant_source_buffer(constant)
         m_read_from_bin = ov::npuw::util::tensor_from_const(it->second);
         NPUW_ASSERT(m_read_from_bin.get_byte_size() == m_byte_size && m_read_from_bin.get_shape() == m_cached_shape &&
                     m_read_from_bin.get_element_type() == m_cached_type);

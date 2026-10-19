@@ -13,6 +13,7 @@
 #include "moe_transformations/moe_transformation.hpp"
 #include "openvino/core/rt_info/weightless_caching_attributes.hpp"
 #include "openvino/core/version.hpp"
+#include "openvino/core/weight_sharing_util.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/util/op_types.hpp"
 #include "openvino/reference/convert.hpp"
@@ -49,13 +50,10 @@ ov::npuw::s11n::BF16Cache ov::npuw::s11n::get_bf16_consts(const std::shared_ptr<
             if (c->get_element_type() != ov::element::bf16) {
                 continue;
             }
-            auto rt_info = c->get_rt_info();
-            auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
-            if (weightless_cache_attr == rt_info.end()) {
-                continue;
+            std::optional<ov::weight_sharing::WeightOriginMetaData> origin = ov::weight_sharing::Extension::get_constant_origin(c);
+            if (origin.has_value()) {
+                bf16_cache.insert({origin->m_offset, c->get_byte_size()});
             }
-            std::size_t offset = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>().bin_offset;
-            bf16_cache.insert({offset, c->get_byte_size()});
         }
     }
     return bf16_cache;

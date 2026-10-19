@@ -152,15 +152,12 @@ ov::npuw::s11n::WeightsContext make_import_weights_ctx(const ov::AnyMap& propert
                     continue;
                 }
                 const auto& c = std::static_pointer_cast<ov::op::v0::Constant>(node);
-                auto rt_info = c->get_rt_info();
-                auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
-                if (weightless_cache_attr == rt_info.end()) {
-                    continue;
+                std::optional<ov::weight_sharing::WeightOriginMetaData> origin = ov::weight_sharing::Extension::get_constant_origin(c);
+                if (origin.has_value()) {
+                    std::size_t offset = origin->m_offset;
+                    std::size_t size = c->get_byte_size();
+                    consts_cache[{offset, size}] = node;
                 }
-                std::size_t offset = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>().bin_offset;
-                std::size_t size = c->get_byte_size();
-                consts_cache[{offset, size}] = node;
-            }
         } else if (!handle_provider) {
             NPUW_ASSERT(false && "Blob is weightless but no WEIGHTS_PATH nor MODEL_PTR property is provided!");
         }
@@ -521,8 +518,10 @@ ov::npuw::CompiledModel::CompiledModel(const std::shared_ptr<ov::Model>& model,
     }
 
     // Store original constants' offset for serialization purposes
-    store_const_offsets(model);
-
+    store_const_offsets(model, *m_shared_ctx_ptr);
+    ov::weight_sharing::set_constant_in_weight_registry(m_shared_ctx_ptr->m_weight_registry, model);
+// get_buffer_offsets(model);
+// set_weight_source(model);
     std::optional<ov::npuw::v1::subgraphs::PatternRegistry> combined_subgraph_patterns;
     std::vector<ov::npuw::v1::subgraphs::ScopedPatternRegistration> builtin_pattern_registrations;
     combined_subgraph_patterns.emplace();
@@ -2007,23 +2006,24 @@ void ov::npuw::CompiledModel::finalize_weights_bank() {
     LOG_INFO("Done.");
 }
 
-void ov::npuw::CompiledModel::store_const_offsets(const std::shared_ptr<ov::Model>& model) {
+void ov::npuw::CompiledModel::store_const_offsets(const std::shared_ptr<ov::Model>& model, ov::weight_sharing::Context ctx) {
     for (auto&& node_ptr : model->get_ordered_ops()) {
         if (ov::op::util::is_constant(node_ptr)) {
             const auto& c = std::static_pointer_cast<ov::op::v0::Constant>(node_ptr);
-            auto rt_info = c->get_rt_info();
-            auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
-            if (weightless_cache_attr == rt_info.end()) {
-                continue;
-            }
-            std::size_t offset = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>().bin_offset;
-            auto data_ptr = c->get_data_ptr();
-            auto inserted = m_const_to_offset.insert({data_ptr, offset});
-            if (!inserted.second) {
-                NPUW_ASSERT(inserted.first->second == offset &&
-                            "Model contains two constants with same pointer and different offset!");
+            std::optional<ov::weight_sharing::WeightOriginMetaData> origin = ov::weight_sharing::Extension::get_constant_origin(*c);
+            if (origin.has_value()) {
+                // the legacy way
+                auto data_ptr = c->get_data_ptr();
+                auto inserted = m_const_to_offset.insert({data_ptr, origin->m_offset});
+                if (!inserted.second) {
+                    NPUW_ASSERT(inserted.first->second == origin->m_offset &&
+                                "Model contains two constants with same pointer and different offset!");
+                }
             }
         }
+
+        // remember weight source for this constant for cache purposes
+        set_weight_source(ctx.m_cache_sources, *c);
     }
 }
 
