@@ -42,6 +42,9 @@ namespace ov::weight_sharing {
 bool Extension::set_constant_in_weight_registry(WeightRegistry& weight_registry, const ov::op::v0::Constant& constant) {
     if (const auto desc = constant.m_data->get_descriptor()) {
         const auto c_id = Extension::get_constant_id(constant);
+        if (c_id == invalid_constant_id || desc == nullptr) {
+            return false;
+        }
         weight_registry[desc->get_id()][c_id] =
             WeightMetaData{desc->get_offset(), constant.get_byte_size(), constant.get_element_type()};
         return true;
