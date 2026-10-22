@@ -1479,6 +1479,7 @@ void ov::npuw::CompiledModel::serialize_orc_container(std::ostream& stream,
 
     ov::AnyMap serializable_props = m_non_npuw_props;
     serializable_props.erase(ov::cache_encryption_callbacks.name());
+    // According to a comment to WeightsContext constructor, this is the exporting path.
     s11n::WeightsContext weights_ctx(is_weightless, m_const_to_offset);
 
     auto write_children = [&](std::ostream& body_stream) {
@@ -2012,7 +2013,7 @@ void ov::npuw::CompiledModel::store_const_offsets(const std::shared_ptr<ov::Mode
             const auto& c = std::static_pointer_cast<ov::op::v0::Constant>(node_ptr);
             std::optional<ov::weight_sharing::WeightOriginMetaData> origin = ov::weight_sharing::Extension::get_constant_origin(*c);
             if (origin.has_value()) {
-                // the legacy way
+                // the legacy way, m_const_to_offset should be deprecated once we introduce ov::weight_sharing::Context
                 auto data_ptr = c->get_data_ptr();
                 auto inserted = m_const_to_offset.insert({data_ptr, origin->m_offset});
                 if (!inserted.second) {
@@ -2023,6 +2024,7 @@ void ov::npuw::CompiledModel::store_const_offsets(const std::shared_ptr<ov::Mode
         }
 
         // remember weight source for this constant for cache purposes
+        // or not in m_cache_sources... @Javier
         set_weight_source(ctx.m_cache_sources, *c);
     }
 }
